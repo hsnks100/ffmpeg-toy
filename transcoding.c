@@ -36,8 +36,8 @@
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 
-static AVFormatContext *ifmt_ctx_v;
-/*static AVFormatContext *ifmt_ctx;*/
+static AVFormatContext *ifmt_ctx_v; // raw h264
+static AVFormatContext *ifmt_ctx_a;
 static AVFormatContext *ofmt_ctx;
 typedef struct FilteringContext {
     AVFilterContext *buffersink_ctx;
@@ -129,7 +129,9 @@ static int open_output_file(const char *filename)
                 else
                     enc_ctx->pix_fmt = dec_ctx->pix_fmt;
                 /* video time_base can be set to whatever is handy and supported by encoder */
-                enc_ctx->time_base = av_inv_q(dec_ctx->framerate);
+                AVRational gg = {1, 60};
+                enc_ctx->time_base = gg; // {1, 30}; // av_inv_q(dec_ctx->framerate);
+
             } else {
                 enc_ctx->sample_rate = dec_ctx->sample_rate;
                 enc_ctx->channel_layout = dec_ctx->channel_layout;
@@ -359,6 +361,9 @@ static int init_filters(void)
         if (ret)
             return ret;
     }
+    /*for (i = 0; i < ifmt_ctx_v->nb_streams; i++) { */
+        /*filter_ctx[i].filter_graph = NULL;*/
+    /*}*/
     return 0;
 }
 
@@ -381,8 +386,10 @@ static int encode_write_frame(AVFrame *filt_frame, unsigned int stream_index, in
     ret = enc_func(stream_ctx[stream_index].enc_ctx, &enc_pkt,
             filt_frame, got_frame);
     av_frame_free(&filt_frame);
-    if (ret < 0)
+    if (ret < 0) {
+        printf("enc_func error \n");
         return ret;
+    }
     if (!(*got_frame))
         return 0;
 
@@ -395,6 +402,11 @@ static int encode_write_frame(AVFrame *filt_frame, unsigned int stream_index, in
     av_log(NULL, AV_LOG_DEBUG, "Muxing frame\n");
     /* mux encoded frame */
     ret = av_interleaved_write_frame(ofmt_ctx, &enc_pkt);
+    if (ret < 0) {
+        printf("av_interleaved_write_frame error %d\n", __LINE__);
+        return ret;
+    }
+
     return ret;
 }
 
@@ -435,8 +447,10 @@ static int filter_encode_write_frame(AVFrame *frame, unsigned int stream_index)
 
         filt_frame->pict_type = AV_PICTURE_TYPE_NONE;
         ret = encode_write_frame(filt_frame, stream_index, NULL);
-        if (ret < 0)
+        if (ret < 0) {
+            printf("encode_write_frame error \n");
             break;
+        }
     }
 
     return ret;
@@ -489,9 +503,29 @@ int main(int argc, char **argv)
         goto end;
 
     /* read all packets */
+	int frame_index=0;
     while (1) {
+        AVStream *in_stream, *out_stream;
         if ((ret = av_read_frame(ifmt_ctx_v, &packet)) < 0)
             break;
+
+        in_stream  = ifmt_ctx_v->streams[packet.stream_index];
+        /*AVRational gg = {60, 1};*/
+        /*in_stream->r_frame_rate = gg; // time_base = gg;*/
+
+
+        if(packet.pts == AV_NOPTS_VALUE) {
+            printf("nopts_value \n");
+            //Write PTS
+            AVRational time_base1=in_stream->time_base;
+            //Duration between 2 frames (us)
+            double calc_duration=(double)AV_TIME_BASE/av_q2d(in_stream->r_frame_rate); //  * 25.0 / 30.0;
+            //Parameters
+            packet.pts=(double)(frame_index*calc_duration)/(double)(av_q2d(time_base1)*AV_TIME_BASE);
+            packet.dts=packet.pts;
+            packet.duration=(double)calc_duration/(double)(av_q2d(time_base1)*AV_TIME_BASE) ;
+            frame_index++;
+        }
         stream_index = packet.stream_index;
         type = ifmt_ctx_v->streams[packet.stream_index]->codecpar->codec_type;
         av_log(NULL, AV_LOG_DEBUG, "Demuxer gave frame of stream_index %u\n",
@@ -521,8 +555,10 @@ int main(int argc, char **argv)
                 frame->pts = frame->best_effort_timestamp;
                 ret = filter_encode_write_frame(frame, stream_index);
                 av_frame_free(&frame);
-                if (ret < 0)
-                    goto end;
+                if (ret < 0) {
+                    printf("filter_encode_write_frame error \n");
+                    goto end; 
+                }
             } else {
                 av_frame_free(&frame);
             }
@@ -534,8 +570,10 @@ int main(int argc, char **argv)
                                  ofmt_ctx->streams[stream_index]->time_base);
 
             ret = av_interleaved_write_frame(ofmt_ctx, &packet);
-            if (ret < 0)
+            if (ret < 0) {
+                printf("av_interleaved_write_frame error \n");
                 goto end;
+            }
         }
         av_packet_unref(&packet);
     }
@@ -578,7 +616,7 @@ end:
     avformat_free_context(ofmt_ctx);
 
     if (ret < 0)
-        av_log(NULL, AV_LOG_ERROR, "Error occurred: %s\n", av_err2str(ret));
+        av_log(NULL, AV_LOG_ERROR, "Error occurred2: %s\n", av_err2str(ret));
 
     return ret ? 1 : 0;
 }
