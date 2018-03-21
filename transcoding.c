@@ -71,11 +71,11 @@ static int open_input_file(const char *filename)
         codec_ctx = avcodec_alloc_context3(dec);
         ret = avcodec_parameters_to_context(codec_ctx, stream->codecpar);
         /* Reencode video & audio and remux subtitles etc. */
-        if (codec_ctx->codec_type == AVMEDIA_TYPE_VIDEO
-                || codec_ctx->codec_type == AVMEDIA_TYPE_AUDIO) {
-            if (codec_ctx->codec_type == AVMEDIA_TYPE_VIDEO)
-                codec_ctx->framerate = av_guess_frame_rate(ifmt_ctx_v, stream, NULL);
-            /* Open decoder */
+        if (codec_ctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+            codec_ctx->framerate = av_guess_frame_rate(ifmt_ctx_v, stream, NULL);
+            ret = avcodec_open2(codec_ctx, dec, NULL);
+        }
+        else if(codec_ctx->codec_type == AVMEDIA_TYPE_AUDIO) {
             ret = avcodec_open2(codec_ctx, dec, NULL);
         }
         stream_ctx[i].dec_ctx = codec_ctx;
@@ -101,46 +101,24 @@ static int open_output_file(const char *filename)
         in_stream = ifmt_ctx_v->streams[i];
         dec_ctx = stream_ctx[i].dec_ctx;
 
-        if (dec_ctx->codec_type == AVMEDIA_TYPE_VIDEO
-                || dec_ctx->codec_type == AVMEDIA_TYPE_AUDIO) {
-            /* in this example, we choose transcoding to same codec */
-            if(dec_ctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-                encoder = avcodec_find_encoder( AV_CODEC_ID_H264 );
-            }
-            else {
-                encoder = avcodec_find_encoder( AV_CODEC_ID_MP3 );
-            }
+        if (dec_ctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+            encoder = avcodec_find_encoder( AV_CODEC_ID_H264 );
             if (!encoder) {
                 av_log(NULL, AV_LOG_FATAL, "Necessary encoder not found\n");
                 return AVERROR_INVALIDDATA;
             }
             enc_ctx = avcodec_alloc_context3(encoder);
-
-            /* In this example, we transcode to same properties (picture size,
-             * sample rate etc.). These properties can be changed for output
-             * streams easily using filters */
-            if (dec_ctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-                enc_ctx->height = dec_ctx->height;
-                enc_ctx->width = dec_ctx->width;
-                enc_ctx->sample_aspect_ratio = dec_ctx->sample_aspect_ratio;
-                /* take first format from list of supported formats */
-                if (encoder->pix_fmts)
-                    enc_ctx->pix_fmt = encoder->pix_fmts[0];
-                else
-                    enc_ctx->pix_fmt = dec_ctx->pix_fmt;
-                /* video time_base can be set to whatever is handy and supported by encoder */
-                AVRational gg = {1, 60};
-                enc_ctx->time_base = gg; // {1, 30}; // av_inv_q(dec_ctx->framerate);
-
-            } else {
-                enc_ctx->sample_rate = dec_ctx->sample_rate;
-                enc_ctx->channel_layout = dec_ctx->channel_layout;
-                enc_ctx->channels = av_get_channel_layout_nb_channels(enc_ctx->channel_layout);
-                /* take first format from list of supported formats */
-                enc_ctx->sample_fmt = encoder->sample_fmts[0];
-                enc_ctx->time_base = (AVRational){1, enc_ctx->sample_rate};
-            }
-
+            enc_ctx->height = dec_ctx->height;
+            enc_ctx->width = dec_ctx->width;
+            enc_ctx->sample_aspect_ratio = dec_ctx->sample_aspect_ratio;
+            /* take first format from list of supported formats */
+            if (encoder->pix_fmts)
+                enc_ctx->pix_fmt = encoder->pix_fmts[0];
+            else
+                enc_ctx->pix_fmt = dec_ctx->pix_fmt;
+            /* video time_base can be set to whatever is handy and supported by encoder */
+            AVRational gg = {1, 60};
+            enc_ctx->time_base = gg; // {1, 30}; // av_inv_q(dec_ctx->framerate);
             /* Third parameter can be used to pass settings to encoder */
             ret = avcodec_open2(enc_ctx, encoder, NULL);
             ret = avcodec_parameters_from_context(out_stream->codecpar, enc_ctx);
@@ -149,10 +127,29 @@ static int open_output_file(const char *filename)
 
             out_stream->time_base = enc_ctx->time_base;
             stream_ctx[i].enc_ctx = enc_ctx;
-        } else if (dec_ctx->codec_type == AVMEDIA_TYPE_UNKNOWN) {
-            av_log(NULL, AV_LOG_FATAL, "Elementary stream #%d is of unknown type, cannot proceed\n", i);
-            return AVERROR_INVALIDDATA;
-        } else {
+        }
+        else if(dec_ctx->codec_type == AVMEDIA_TYPE_AUDIO) {
+            encoder = avcodec_find_encoder( AV_CODEC_ID_MP3 );
+            if (!encoder) {
+                av_log(NULL, AV_LOG_FATAL, "Necessary encoder not found\n");
+                return AVERROR_INVALIDDATA;
+            }
+            enc_ctx = avcodec_alloc_context3(encoder);
+            enc_ctx->sample_rate = dec_ctx->sample_rate;
+            enc_ctx->channel_layout = dec_ctx->channel_layout;
+            enc_ctx->channels = av_get_channel_layout_nb_channels(enc_ctx->channel_layout);
+            /* take first format from list of supported formats */
+            enc_ctx->sample_fmt = encoder->sample_fmts[0];
+            enc_ctx->time_base = (AVRational){1, enc_ctx->sample_rate};
+            /* Third parameter can be used to pass settings to encoder */
+            ret = avcodec_open2(enc_ctx, encoder, NULL);
+            ret = avcodec_parameters_from_context(out_stream->codecpar, enc_ctx);
+            if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
+                enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+            out_stream->time_base = enc_ctx->time_base;
+            stream_ctx[i].enc_ctx = enc_ctx;
+        }else {
             /* if this stream must be remuxed */
             ret = avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
             if (ret < 0) {
@@ -160,8 +157,7 @@ static int open_output_file(const char *filename)
                 return ret;
             }
             out_stream->time_base = in_stream->time_base;
-        }
-
+        } 
     }
     av_dump_format(ofmt_ctx, 0, filename, 1);
 
@@ -531,6 +527,10 @@ int main(int argc, char **argv)
         av_log(NULL, AV_LOG_DEBUG, "Demuxer gave frame of stream_index %u\n",
                 stream_index);
 
+        /*if(type == AVMEDIA_TYPE_VIDEO) {*/
+        /*}*/
+        /*else if(type == AVMEDIA_TYPE_AUDIO) {*/
+        /*}*/
         if (filter_ctx[stream_index].filter_graph) {
             av_log(NULL, AV_LOG_DEBUG, "Going to reencode&filter the frame\n");
             frame = av_frame_alloc();
