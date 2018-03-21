@@ -1,3 +1,4 @@
+extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavfilter/avfiltergraph.h>
@@ -5,6 +6,15 @@
 #include <libavfilter/buffersrc.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/error.h>
+}
+
+#if __cplusplus 
+
+#undef av_err2str 
+#define av_err2str(errnum)  av_make_error_string((char*)__builtin_alloca(AV_ERROR_MAX_STRING_SIZE), AV_ERROR_MAX_STRING_SIZE, errnum) 
+
+#endif
 
 static AVFormatContext *ifmt_ctx_v; // raw h264
 static AVFormatContext *ifmt_ctx_a;
@@ -26,17 +36,21 @@ int audioindex_a=-1,audioindex_out=-1;
 
 
 #define KLOG printf("---------------%d------------\n", __LINE__)
-static int open_input_file(const char *filename)
+static int open_input_file(const char *videoFile, const char *audioFile)
 {
     int ret;
     unsigned int i;
 
     ifmt_ctx_v = NULL;
-    avformat_open_input(&ifmt_ctx_v, filename, NULL, NULL);
+    avformat_open_input(&ifmt_ctx_v, videoFile, NULL, NULL);
     avformat_find_stream_info(ifmt_ctx_v, NULL);
 
+    //ifmt_ctx_a = NULL;
+    //avformat_open_input(&ifmt_ctx_a, audioFile, NULL, NULL);
+    //avformat_find_stream_info(ifmt_ctx_a, NULL);
+
     printf("stream count = %d\n", ifmt_ctx_v->nb_streams);
-    stream_ctx = av_mallocz_array(ifmt_ctx_v->nb_streams, sizeof(*stream_ctx));
+    stream_ctx = (StreamContext*)av_mallocz_array(ifmt_ctx_v->nb_streams, sizeof(*stream_ctx));
 
     for (i = 0; i < ifmt_ctx_v->nb_streams; i++) {
         AVStream *stream = ifmt_ctx_v->streams[i];
@@ -56,7 +70,7 @@ static int open_input_file(const char *filename)
         stream_ctx[i].dec_ctx = codec_ctx;
     }
 
-    av_dump_format(ifmt_ctx_v, 0, filename, 0);
+    av_dump_format(ifmt_ctx_v, 0, videoFile, 0);
     return 0;
 }
 
@@ -295,7 +309,7 @@ static int init_filters(void)
     const char *filter_spec;
     unsigned int i;
     int ret;
-    filter_ctx = av_malloc_array(ifmt_ctx_v->nb_streams, sizeof(*filter_ctx));
+    filter_ctx = (FilteringContext*)av_malloc_array(ifmt_ctx_v->nb_streams, sizeof(*filter_ctx));
     if (!filter_ctx)
         return AVERROR(ENOMEM);
 
@@ -432,7 +446,9 @@ static int flush_encoder(unsigned int stream_index)
 int main(int argc, char **argv)
 {
     int ret;
-    AVPacket packet = { .data = NULL, .size = 0 };
+    AVPacket packet;
+    packet.data = NULL;
+    packet.size = 0;
     AVFrame *frame = NULL;
     enum AVMediaType type;
     unsigned int stream_index;
@@ -440,23 +456,23 @@ int main(int argc, char **argv)
     int got_frame;
     int (*dec_func)(AVCodecContext *, AVFrame *, int *, const AVPacket *);
 
-    if (argc != 3) {
-        av_log(NULL, AV_LOG_ERROR, "Usage: %s <input file> <output file>\n", argv[0]);
+    if (argc != 4) {
+        av_log(NULL, AV_LOG_ERROR, "Usage: %s <video input file> <audio input file> <output file>\n", argv[0]);
         return 1;
     }
 
     av_register_all();
     avfilter_register_all();
 
-    if ((ret = open_input_file(argv[1])) < 0)
+	int frame_index=0;
+    if ((ret = open_input_file(argv[1], argv[2])) < 0)
         goto end;
-    if ((ret = open_output_file(argv[2])) < 0)
+    if ((ret = open_output_file(argv[3])) < 0)
         goto end;
     if ((ret = init_filters()) < 0)
         goto end;
 
     /* read all packets */
-	int frame_index=0;
     while (1) {
         AVStream *in_stream, *out_stream;
         if ((ret = av_read_frame(ifmt_ctx_v, &packet)) < 0)
@@ -486,8 +502,8 @@ int main(int argc, char **argv)
 
         if(type == AVMEDIA_TYPE_VIDEO) {
             //Convert PTS/DTS
-            packet.pts = av_rescale_q_rnd(packet.pts, in_stream->time_base, out_stream->time_base, (AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
-            packet.dts = av_rescale_q_rnd(packet.dts, in_stream->time_base, out_stream->time_base, (AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
+            packet.pts = av_rescale_q_rnd(packet.pts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
+            packet.dts = av_rescale_q_rnd(packet.dts, in_stream->time_base, out_stream->time_base, (AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
             packet.duration = av_rescale_q(packet.duration, in_stream->time_base, out_stream->time_base);
             packet.pos = -1;
             packet.stream_index=stream_index;
@@ -554,6 +570,7 @@ int main(int argc, char **argv)
     /*}*/
 
     av_write_trailer(ofmt_ctx);
+
 end:
     av_packet_unref(&packet);
     av_frame_free(&frame);
