@@ -21,6 +21,9 @@ extern "C" {
 #include <vector>
 #include <unistd.h>
 
+
+// ./toy-0.1.out ksoo.h264 audio_chn0.pcm zzzz.mp4
+
 static AVFormatContext *ifmt_ctx_v; // raw h264
 static AVFormatContext *ifmt_ctx_a;
 static AVFormatContext *ofmt_ctx;
@@ -46,7 +49,7 @@ int videoindex_v=-1,videoindex_out=-1;
 int audioindex_a=-1,audioindex_out=-1;
 
 
-#define KLOG printf("---------------%d------------\n", __LINE__)
+#define KLOG printf("---------------%s::%d------------\n", __FUNCTION__, __LINE__)
 const int VIDEO_FILE = 0;
 const int AUDIO_FILE = 1;
 static int open_input_file(const char *videoFile, const char *audioFile)
@@ -54,18 +57,15 @@ static int open_input_file(const char *videoFile, const char *audioFile)
     int ret;
     unsigned int i;
 
-    KLOG;
     ifmt_ctx_v = NULL;
     avformat_open_input(&ifmt_ctx_v, videoFile, NULL, NULL);
     avformat_find_stream_info(ifmt_ctx_v, NULL);
 
-    KLOG;
     ifmt_ctx_a = NULL;
     AVInputFormat* fmt = NULL;
     fmt = av_find_input_format("s16le");
 
     avformat_open_input(&ifmt_ctx_a, audioFile, fmt, NULL);
-    KLOG;
     avformat_find_stream_info(ifmt_ctx_a, NULL);
 
     printf("v stream count = %d\n", ifmt_ctx_v->nb_streams);
@@ -193,7 +193,6 @@ static int open_output_file(const char *filename)
         }
     }
 
-    av_dump_format(ofmt_ctx, 0, filename, 1);
 
     if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
         ret = avio_open(&ofmt_ctx->pb, filename, AVIO_FLAG_WRITE);
@@ -203,14 +202,12 @@ static int open_output_file(const char *filename)
         }
     }
 
-    KLOG;
     /* init muxer, write output file header */
     ret = avformat_write_header(ofmt_ctx, NULL);
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "Error occurred when opening output file\n");
         return ret;
     }
-    KLOG;
 
     return 0;
 }
@@ -218,7 +215,6 @@ static int open_output_file(const char *filename)
 static int init_filter(FilteringContext* fctx, AVCodecContext *dec_ctx,
         AVCodecContext *enc_ctx, const char *filter_spec)
 {
-    KLOG;
     char args[512];
     int ret = 0;
     AVFilter *buffersrc = NULL;
@@ -580,7 +576,6 @@ int main(int argc, char **argv)
     av_register_all();
     avfilter_register_all();
 
-    KLOG;
 	int frame_index=0;
     int64_t cur_pts_v = 0;
     int64_t cur_pts_a = 0;
@@ -600,10 +595,10 @@ int main(int argc, char **argv)
     /* read all packets */
 
     //cur_pts 처리할 차례
+    av_dump_format(ofmt_ctx, 0, argv[3], 1);
 
     printf("videoout = %d, audioout = %d\n", videoindex_out, audioindex_out);
     while (1) {
-        //KLOG;
         AVStream *in_stream, *out_stream;
         AVFormatContext* ifmt_ctx = NULL;
         if(av_compare_ts(cur_pts_v, ifmt_ctx_v->streams[videoindex_v]->time_base, 
@@ -735,7 +730,6 @@ int main(int argc, char **argv)
 
         //[> flush encoder <]
         ret = flush_encoder(i, AUDIO_FILE);
-        KLOG;
         if (ret < 0) {
             av_log(NULL, AV_LOG_ERROR, "Flushing encoder failed\n");
             goto end;
@@ -747,7 +741,6 @@ int main(int argc, char **argv)
 end:
     av_packet_unref(&packet);
     av_frame_free(&frame);
-    KLOG;
     for (i = 0; i < ifmt_ctx_v->nb_streams; i++) {
         avcodec_free_context(&contexts[0].stream_ctx[i].dec_ctx);
         //if (ofmt_ctx && ofmt_ctx->nb_streams > i && ofmt_ctx->streams[i] && contexts[0].stream_ctx[i].enc_ctx)
@@ -755,7 +748,6 @@ end:
         //if (contexts[0].filter_ctx && contexts[0].filter_ctx[i].filter_graph)
             //avfilter_graph_free(&contexts[0].filter_ctx[i].filter_graph);
     }
-    KLOG;
     for (i = 0; i < ifmt_ctx_a->nb_streams; i++) {
         avcodec_free_context(&contexts[AUDIO_FILE].stream_ctx[i].dec_ctx);
         if (ofmt_ctx && ofmt_ctx->nb_streams > i && ofmt_ctx->streams[i] && contexts[AUDIO_FILE].stream_ctx[i].enc_ctx)
@@ -763,10 +755,8 @@ end:
         if (contexts[AUDIO_FILE].filter_ctx && contexts[AUDIO_FILE].filter_ctx[i].filter_graph)
             avfilter_graph_free(&contexts[AUDIO_FILE].filter_ctx[i].filter_graph);
     }
-    KLOG;
     av_free(contexts[0].filter_ctx);
     av_free(contexts[0].stream_ctx);
-    KLOG;
 
     av_free(contexts[AUDIO_FILE].filter_ctx);
     av_free(contexts[AUDIO_FILE].stream_ctx);
@@ -776,7 +766,6 @@ end:
         avio_closep(&ofmt_ctx->pb);
     avformat_free_context(ofmt_ctx);
 
-    KLOG;
     if (ret < 0)
         av_log(NULL, AV_LOG_ERROR, "Error occurred2: %s\n", av_err2str(ret));
 
